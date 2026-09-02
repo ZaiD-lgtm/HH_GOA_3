@@ -1,0 +1,12 @@
+# Core pipeline. Install the extras below for the real face model / testnet.
+numpy>=1.24
+opencv-python>=4.8
+requests>=2.31
+python-dotenv>=1.0
+
+# Face recognition (ArcFace embeddings). Needs a Python with published wheels
+# for onnxruntime - 3.11 or 3.12 as of now, not 3.14.
+#   pip install -r requirements-face.txt
+
+# EVM anchoring
+#   pip install -r requirements-evm.txt
