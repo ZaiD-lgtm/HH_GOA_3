@@ -1,0 +1,14 @@
+[
+  {
+    "note": "SYNTHETIC pairing for offline plumbing tests only - the image is a public OpenCV sample, the page_url is not a real post about it.",
+    "page_url": "https://www.reddit.com/r/computervision/comments/000000/fixture_post/",
+    "image_url": "https://raw.githubusercontent.com/opencv/opencv/master/samples/data/lena.jpg",
+    "title": "fixture: social-platform row, exercises the default social_only path"
+  },
+  {
+    "note": "SYNTHETIC. Non-social row - filtered out unless --any-domain is passed.",
+    "page_url": "https://github.com/opencv/opencv/tree/master/samples/data",
+    "image_url": "https://raw.githubusercontent.com/opencv/opencv/master/samples/data/messi5.jpg",
+    "title": "fixture: non-social row"
+  }
+]

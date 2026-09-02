@@ -1,0 +1,24 @@
+.env
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+
+# run artefacts (downloaded images, crops, bundles) - keep the folder
+runs/*
+!runs/.gitkeep
+!runs/example/
+
+# local face models downloaded by insightface
+~/.insightface/
+models/
+
+# personal input images
+samples/*
+!samples/.gitkeep
+!samples/fixtures.json
+!samples/README.md
