@@ -18,6 +18,7 @@ import requests
 from hhg3.config import Config
 from hhg3.face.compare import cosine
 from hhg3.hashing import sha256_file
+from hhg3.imagehash import agreement, phash
 from hhg3.logging_utils import info, ok, warn
 from hhg3.types import Candidate, FaceProbe, Match
 
@@ -107,50 +108,40 @@ def _decode(path: Path) -> np.ndarray:
     return img
 
 
-def confirm_candidates(
-    probe: FaceProbe,
-    candidates: list[Candidate],
-    detector,
-    embedder,
-    cfg: Config,
-    work_dir: Path,
-) -> tuple[Match | None, list[dict]]:
-    """Score candidates against the probe.
+def _prepare(cand: Candidate, idx: int, cfg: Config, work_dir: Path, row: dict):
+    """Common candidate gate: social filter, image URL, download, decode."""
+    if cfg.social_only and not cand.is_social:
+        row["status"] = "not-social"
+        return None
+    if not cand.image_url:
+        row["status"] = "no-image-url"
+        return None
+    dest = work_dir / ("cand_%02d.jpg" % idx)
+    fetch_image(cand.image_url, dest, cfg)
+    return dest, _decode(dest)
 
-    Returns the best match above `cfg.match_threshold` (or None) plus a trace of
-    every candidate examined, which goes into the evidence bundle.
-    """
+
+def _score_by_face(probe, candidates, detector, embedder, cfg, work_dir):
     probe_vec = np.asarray(probe.embedding, dtype=np.float32)
     trace: list[dict] = []
     best: Match | None = None
 
     for idx, cand in enumerate(candidates):
-        row = {
-            "index": idx,
-            "page_url": cand.page_url,
-            "image_url": cand.image_url,
-            "platform": cand.platform,
-            "status": "skipped",
-            "similarity": None,
-        }
-        if cfg.social_only and not cand.is_social:
-            row["status"] = "not-social"
-            trace.append(row)
-            continue
-        if not cand.image_url:
-            row["status"] = "no-image-url"
-            trace.append(row)
-            continue
-
-        dest = work_dir / ("cand_%02d.jpg" % idx)
+        row = {"index": idx, "page_url": cand.page_url, "image_url": cand.image_url,
+               "platform": cand.platform, "status": "skipped", "similarity": None}
         try:
-            fetch_image(cand.image_url, dest, cfg)
-            image = _decode(dest)
+            prepared = _prepare(cand, idx, cfg, work_dir, row)
+            if prepared is None:
+                trace.append(row)
+                continue
+            dest, image = prepared
+
             dets = detector.detect(image)
             if not dets:
                 row["status"] = "no-face-in-candidate"
                 trace.append(row)
                 continue
+
             scores = []
             for det in dets[:5]:
                 try:
@@ -163,28 +154,78 @@ def confirm_candidates(
                 continue
 
             score, det = max(scores, key=lambda pair: pair[0])
-            row["status"] = "scored"
-            row["similarity"] = round(float(score), 6)
-            row["faces_found"] = len(dets)
+            row.update(status="scored", similarity=round(float(score), 6), faces_found=len(dets))
             info("candidate %d %s -> similarity %.4f" % (idx, cand.domain, score))
 
             if score >= cfg.match_threshold and (best is None or score > best.similarity):
-                best = Match(
-                    candidate=cand,
-                    similarity=float(score),
-                    threshold=cfg.match_threshold,
-                    candidate_image_path=str(dest),
-                    candidate_image_sha256=sha256_file(dest),
-                    matched_bbox=det.bbox,
-                )
+                best = Match(candidate=cand, similarity=float(score), threshold=cfg.match_threshold,
+                             candidate_image_path=str(dest), candidate_image_sha256=sha256_file(dest),
+                             matched_bbox=det.bbox, method="face-cosine")
         except Exception as exc:
             row["status"] = "error"
             row["error"] = "%s: %s" % (type(exc).__name__, exc)
             warn("candidate %d failed: %s" % (idx, exc))
         trace.append(row)
+    return best, trace
+
+
+def _score_by_image(probe, candidates, cfg, work_dir):
+    """No face to compare, so ask whether it is the same picture instead."""
+    probe_hash = phash(_decode(Path(probe.source_path)))
+    threshold = cfg.image_match_threshold
+    trace: list[dict] = []
+    best: Match | None = None
+
+    for idx, cand in enumerate(candidates):
+        row = {"index": idx, "page_url": cand.page_url, "image_url": cand.image_url,
+               "platform": cand.platform, "status": "skipped", "similarity": None}
+        try:
+            prepared = _prepare(cand, idx, cfg, work_dir, row)
+            if prepared is None:
+                trace.append(row)
+                continue
+            dest, image = prepared
+
+            score = agreement(probe_hash, phash(image))
+            row.update(status="scored", similarity=round(score, 6))
+            info("candidate %d %s -> image agreement %.4f" % (idx, cand.domain, score))
+
+            if score >= threshold and (best is None or score > best.similarity):
+                best = Match(candidate=cand, similarity=score, threshold=threshold,
+                             candidate_image_path=str(dest), candidate_image_sha256=sha256_file(dest),
+                             matched_bbox=None, method="image-phash")
+        except Exception as exc:
+            row["status"] = "error"
+            row["error"] = "%s: %s" % (type(exc).__name__, exc)
+            warn("candidate %d failed: %s" % (idx, exc))
+        trace.append(row)
+    return best, trace
+
+
+def confirm_candidates(
+    probe: FaceProbe,
+    candidates: list[Candidate],
+    detector,
+    embedder,
+    cfg: Config,
+    work_dir: Path,
+) -> tuple[Match | None, list[dict]]:
+    """Score candidates against the probe.
+
+    Face probes are confirmed by embedding cosine; a probe with no face falls
+    back to perceptual-hash agreement over the whole image. The two scores live
+    on different scales and carry different thresholds, so `Match.method`
+    records which one produced the result.
+    """
+    if probe.has_face:
+        best, trace = _score_by_face(probe, candidates, detector, embedder, cfg, work_dir)
+        threshold, label = cfg.match_threshold, "similarity"
+    else:
+        best, trace = _score_by_image(probe, candidates, cfg, work_dir)
+        threshold, label = cfg.image_match_threshold, "image agreement"
 
     if best:
-        ok("match: %s (similarity %.4f >= %.2f)" % (best.candidate.page_url, best.similarity, cfg.match_threshold))
+        ok("match: %s (%s %.4f >= %.2f)" % (best.candidate.page_url, label, best.similarity, threshold))
     else:
-        warn("no candidate cleared the %.2f similarity threshold" % cfg.match_threshold)
+        warn("no candidate cleared the %.2f %s threshold" % (threshold, label))
     return best, trace

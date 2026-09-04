@@ -31,16 +31,23 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--provider", default=None, help="auto|serpapi|gcv|yandex|mock")
     run.add_argument("--chain", default=None, help="local|evm|auto")
     run.add_argument("--detector", default=None, help="auto|insightface|yunet")
-    run.add_argument("--embedder", default=None, help="auto|insightface|sface|fallback")
+    run.add_argument("--embedder", default=None, help="auto|arcface|insightface|sface|fallback")
     run.add_argument("--threshold", type=float, default=None, help="cosine match threshold")
     run.add_argument("--max-candidates", type=int, default=None)
     run.add_argument("--any-domain", action="store_true", help="do not restrict to social platforms")
     run.add_argument(
-        "--search-crop",
-        action="store_true",
-        help="send the face crop to the search provider instead of the source image "
-        "(reverse image search usually finds nothing from a bare crop)",
+        "--search-image", default=None, choices=["auto", "face", "source"],
+        help="what to send the search provider: auto (padded face box when a face "
+             "is found, else the whole image), face, or source",
     )
+    run.add_argument("--search-pad", type=float, default=None,
+                     help="padding around the face box as a fraction of its longest side")
+    run.add_argument("--require-face", action="store_true",
+                     help="abort when no face is detected instead of searching the whole image")
+    run.add_argument("--image-threshold", type=float, default=None,
+                     help="perceptual-hash agreement needed on the no-face path")
+    run.add_argument("--search-crop", action="store_true",
+                     help="alias for --search-image face")
     run.add_argument("--allow-mock", action="store_true", help="permit the fixture provider")
     run.add_argument("--json", action="store_true", help="print the result as JSON")
     _common(run)
@@ -69,11 +76,16 @@ def _config_from(args) -> Config:
         embedder=getattr(args, "embedder", None),
         match_threshold=getattr(args, "threshold", None),
         max_candidates=getattr(args, "max_candidates", None),
+        search_image=getattr(args, "search_image", None),
+        search_pad=getattr(args, "search_pad", None),
+        image_match_threshold=getattr(args, "image_threshold", None),
     )
     if getattr(args, "any_domain", False):
         cfg.social_only = False
+    if getattr(args, "require_face", False):
+        cfg.require_face = True
     if getattr(args, "search_crop", False):
-        cfg.search_image = "crop"
+        cfg.search_image = "face"
     return cfg
 
 

@@ -1,6 +1,7 @@
 """Face embedding backends.
 
-Two are identity-grade: InsightFace ArcFace (512-d) and OpenCV SFace (128-d).
+Three are identity-grade: ArcFace R50 via onnxruntime (512-d, the default),
+InsightFace's own runtime (512-d), and OpenCV SFace (128-d).
 Each carries its own `default_threshold`, because a cosine score only means
 something relative to the model that produced it - 0.5 is a near-certain match
 for SFace and an unremarkable one for a raw pixel descriptor.
@@ -89,6 +90,66 @@ class SFaceEmbedder:
         return _l2(self._model.feature(aligned))
 
 
+class ArcFaceOnnxEmbedder:
+    """ArcFace R50 (WebFace600K), 512-d, run directly through onnxruntime.
+
+    Deliberately avoids the `insightface` package: only its published ONNX
+    weights are used, so there is no build-toolchain dependency on Windows.
+    Alignment is the standard 5-point similarity transform onto ArcFace's
+    canonical template, which is what makes the vector depend on the face
+    rather than on the surrounding photo.
+    """
+
+    name = "arcface-r50-w600k"
+    identity_grade = True
+    default_threshold = 0.45  # cosine, same-identity for buffalo_l recognition
+    input_size = (112, 112)
+
+    # Canonical landmark positions for a 112x112 aligned face. Order matches
+    # YuNet's output: right eye, left eye, nose, right mouth, left mouth
+    # (person's right = image left, i.e. the smaller x).
+    TEMPLATE = np.array(
+        [
+            [38.2946, 51.6963],
+            [73.5318, 51.5014],
+            [56.0252, 71.7366],
+            [41.5493, 92.3655],
+            [70.7299, 92.2041],
+        ],
+        dtype=np.float32,
+    )
+
+    def __init__(self) -> None:
+        import cv2
+        import onnxruntime as ort
+
+        from hhg3 import models
+
+        self._cv2 = cv2
+        self._sess = ort.InferenceSession(
+            str(models.ensure("arcface")), providers=["CPUExecutionProvider"]
+        )
+        self._input = self._sess.get_inputs()[0].name
+
+    def _align(self, image: np.ndarray, det: Detection) -> np.ndarray:
+        cv2 = self._cv2
+        if det.landmarks is None:
+            raise ValueError("ArcFace needs 5-point landmarks; use the YuNet detector")
+        kps = np.asarray(det.landmarks, dtype=np.float32).reshape(5, 2)
+        matrix, _ = cv2.estimateAffinePartial2D(kps, self.TEMPLATE, method=cv2.LMEDS)
+        if matrix is None:
+            raise ValueError("could not solve the alignment transform")
+        return cv2.warpAffine(image, matrix, self.input_size, borderValue=0.0)
+
+    def embed(self, image: np.ndarray, det: Detection) -> np.ndarray:
+        aligned = self._align(image, det)
+        blob = self._cv2.dnn.blobFromImage(
+            aligned, 1.0 / 127.5, self.input_size, (127.5, 127.5, 127.5), swapRB=True
+        )
+        out = self._sess.run(None, {self._input: blob.astype(np.float32)})[0]
+        return _l2(out)
+
+
 class FallbackEmbedder:
     """Downsampled, illumination-normalised pixel descriptor. Plumbing only."""
 
@@ -115,8 +176,9 @@ class FallbackEmbedder:
         return _l2(g)
 
 
-_ORDER = ["insightface", "sface", "fallback"]
+_ORDER = ["arcface", "insightface", "sface", "fallback"]
 _BUILDERS = {
+    "arcface": ArcFaceOnnxEmbedder,
     "insightface": InsightFaceEmbedder,
     "sface": SFaceEmbedder,
     "fallback": FallbackEmbedder,
