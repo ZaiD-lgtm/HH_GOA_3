@@ -1,4 +1,5 @@
 .env
+sim/
 CLAUDE.md
 __pycache__/
 *.py[cod]
