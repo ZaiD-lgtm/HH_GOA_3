@@ -28,13 +28,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = sub.add_parser("run", help="run the full pipeline")
     run.add_argument("--image", required=True, type=Path, help="input face scan")
-    run.add_argument("--provider", default=None, help="auto|serpapi|bing|yandex|mock")
+    run.add_argument("--provider", default=None, help="auto|serpapi|gcv|yandex|mock")
     run.add_argument("--chain", default=None, help="local|evm|auto")
-    run.add_argument("--detector", default=None, help="auto|insightface|opencv")
-    run.add_argument("--embedder", default=None, help="auto|insightface|fallback")
+    run.add_argument("--detector", default=None, help="auto|insightface|yunet")
+    run.add_argument("--embedder", default=None, help="auto|insightface|sface|fallback")
     run.add_argument("--threshold", type=float, default=None, help="cosine match threshold")
     run.add_argument("--max-candidates", type=int, default=None)
     run.add_argument("--any-domain", action="store_true", help="do not restrict to social platforms")
+    run.add_argument(
+        "--search-crop",
+        action="store_true",
+        help="send the face crop to the search provider instead of the source image "
+        "(reverse image search usually finds nothing from a bare crop)",
+    )
     run.add_argument("--allow-mock", action="store_true", help="permit the fixture provider")
     run.add_argument("--json", action="store_true", help="print the result as JSON")
     _common(run)
@@ -66,6 +72,8 @@ def _config_from(args) -> Config:
     )
     if getattr(args, "any_domain", False):
         cfg.social_only = False
+    if getattr(args, "search_crop", False):
+        cfg.search_image = "crop"
     return cfg
 
 
@@ -102,7 +110,11 @@ def cmd_verify(args) -> int:
     from hhg3 import pipeline
 
     cfg = _config_from(args)
-    report = pipeline.verify(args.run, cfg)
+    try:
+        report = pipeline.verify(args.run, cfg)
+    except (FileNotFoundError, ValueError) as exc:
+        print("cannot verify: %s" % exc, file=sys.stderr)
+        return 2
     if args.json:
         print(json.dumps(report, indent=2))
     else:
@@ -160,6 +172,13 @@ _HANDLERS = {"run": cmd_run, "verify": cmd_verify, "doctor": cmd_doctor, "chain"
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Post titles carry emoji; a cp1252 Windows console would raise on print().
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
     args = build_parser().parse_args(argv)
     logging_utils.set_verbose(not getattr(args, "quiet", False))
     return _HANDLERS[args.command](args)

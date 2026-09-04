@@ -16,7 +16,8 @@ samples/probe.jpg
       ▼  1. detect + embed (YuNet → SFace 128-d, or InsightFace ArcFace 512-d)
    probe crop ──────────────────────────────────────────────┐
       │                                                     │
-      ▼  2. reverse image search (SerpAPI Lens / Bing / Yandex)
+      ▼  2. reverse image search of the SOURCE image
+         (SerpAPI Google Lens / Cloud Vision / Yandex)
    N candidate pages ─── keep social platforms only         │
       │                                                     │
       ▼  3. confirm: download each candidate image,         │
@@ -38,6 +39,14 @@ serves, runs detection and embedding on it again, and scores it against the
 probe. So the "match" is a face-recognition decision made locally with a
 recorded similarity score and threshold — not a search-engine ranking, and not
 a hardcoded result.
+
+That split also fixes a trap worth knowing about: **reverse image search matches
+photographs, not faces.** Measured on this pipeline — same photo, same provider —
+searching the cropped face returned **0** results from Google Lens, while
+searching the full source image returned **59 visual matches, 13 of them on
+social platforms** across Instagram, X, LinkedIn, Facebook, Reddit, YouTube and
+TikTok. So stage 2 sends the source image and stage 3 uses the face crop.
+`--search-crop` restores the old behaviour if you want to see this for yourself.
 
 Only a 32-byte hash goes on-chain. The face embedding never leaves the machine
 and is excluded from the record ([`evidence.py`](src/hhg3/evidence.py)), which
@@ -95,7 +104,8 @@ hhg3 verify --run runs/20260903T014500Z-a1b2c3
 ```
 
 Useful flags: `--threshold 0.30` (looser match), `--any-domain` (do not restrict
-to social platforms), `--provider mock --allow-mock` (offline plumbing test),
+to social platforms), `--search-crop` (search the face crop instead of the source
+image), `--provider mock --allow-mock` (offline plumbing test),
 `--embedder sface|insightface|fallback`, `--json`.
 
 The match threshold defaults to whatever the active embedder declares, because a
@@ -141,8 +151,9 @@ that editing `record.json` after anchoring makes `hhg3 verify` fail.
 
 ## What is not done yet
 
-- [ ] A real `SERPAPI_KEY` / `BING_VISUAL_SEARCH_KEY` and one confirmed
-      end-to-end run against a live social post.
+- [x] Confirmed end-to-end run against a live social post — SerpAPI Google Lens
+      returned 25 candidates, 9 on social platforms, 6 scored by face similarity
+      (0.83–0.95), matched an X post, anchored and re-verified.
 - [ ] Testnet run on Sepolia with a funded key, and the tx link recorded here.
 - [ ] Thresholds sanity-checked on real pairs. The defaults are the model
       authors' published numbers, not values measured on this pipeline's crops.
@@ -150,14 +161,27 @@ that editing `record.json` after anchoring makes `hhg3 verify` fail.
 
 ## Known limitations
 
-- **Provider coverage.** Google Lens and Bing index public pages; Instagram and
-  Facebook posts are frequently not reachable this way. Expect X, LinkedIn,
-  Reddit, YouTube and Pinterest to surface far more often.
+- **This finds the photo, not the person.** Stage 2 can only surface pages
+  hosting that same photograph. A different photo of the same face will not be
+  found — that would need a face-search index (PimEyes and similar), which this
+  project deliberately does not use.
+- **Social platforms serve crawler gateways, not image files.** Both search
+  providers hand back `lookaside.fbsbx.com` / `lookaside.instagram.com` URLs.
+  Facebook's returns HTML to a browser user-agent and the real JPEG to a crawler
+  one; Instagram's returns HTML to everything but carries an `og:image` pointing
+  at the actual CDN file. [verify/match.py](src/hhg3/verify/match.py) falls back
+  through both, which took the social scoring rate from **2/9 to 9/9** on a test
+  probe. Sites that do neither are skipped and logged rather than scored.
 - **The Yandex provider scrapes HTML** and will break when the markup changes or
   when it is served a captcha. It is a fallback, not the primary path.
-- **The probe crop is uploaded to a public host** (catbox.moe by default) because
-  URL-based search APIs need a fetchable URL. Bing's provider uploads directly
-  and avoids this; prefer it when handling someone else's photo.
+- **The source image is uploaded to a public host** (catbox.moe) because Lens
+  needs a URL it can fetch, and catbox is intermittently flaky — uploads retry
+  three times. tmpfiles.org was tried and rejected: Lens returns nothing for its
+  links. The Cloud Vision provider POSTs the image directly and avoids the
+  public host entirely; prefer it when the probe is someone else's photo.
+- **Bing Visual Search is not available.** Microsoft retired the entire Bing
+  Search API family on 2025-08-11 — no new signups, 410 on existing keys — so
+  that provider was removed rather than left as a trap.
 - **No liveness or spoof detection.** A printed photo or a screen would pass.
 - **The chain proves *when*, not *what*.** An anchor shows this exact record
   existed at that block — it does not prove the match was correct.
@@ -179,7 +203,7 @@ src/hhg3/
   hashing.py        canonical JSON + sha256
   face/             detect.py, embed.py, compare.py  (pluggable backends)
   models.py         lazy download/cache for the YuNet + SFace ONNX weights
-  search/           serpapi_lens.py, bing_visual.py, yandex.py, mock.py
+  search/           serpapi_lens.py, gcv_web.py, yandex.py, mock.py
   verify/match.py   re-detect + re-embed candidates, decide the match
   chain/            local.py (PoW chain), evm.py (calldata | contract)
 contracts/          AnchorRegistry.sol

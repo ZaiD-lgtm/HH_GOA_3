@@ -40,7 +40,7 @@ class YandexProvider:
         )
         resp.raise_for_status()
         if "captcha" in resp.url or "SmartCaptcha" in resp.text:
-            raise RuntimeError("yandex served a captcha - use serpapi/bing instead")
+            raise RuntimeError("yandex served a captcha - use serpapi/gcv instead")
 
         out: list[Candidate] = []
         for blob in _STATE_RE.findall(resp.text):

@@ -29,19 +29,17 @@ class Config:
     match_threshold: float | None = None
 
     # --- search ---
-    search_provider: str = "auto"  # auto | serpapi | bing | yandex | mock
+    search_provider: str = "auto"  # auto | serpapi | gcv | yandex | mock
     image_host: str = "catbox"     # catbox | imgbb | none  (public URL for the probe crop)
     max_candidates: int = 25
+    # Reverse image search matches *photographs*, not faces: a cropped face
+    # returns nothing from Lens while the full frame returns dozens of hits.
+    # So search the source image and use the crop only for local verification.
+    search_image: str = "source"  # source | crop
     social_only: bool = True
 
     serpapi_key: str = field(default_factory=lambda: _env("SERPAPI_KEY"))
-    bing_key: str = field(default_factory=lambda: _env("BING_VISUAL_SEARCH_KEY"))
-    bing_endpoint: str = field(
-        default_factory=lambda: _env(
-            "BING_VISUAL_SEARCH_ENDPOINT",
-            "https://api.bing.microsoft.com/v7.0/images/visualsearch",
-        )
-    )
+    gcv_key: str = field(default_factory=lambda: _env("GOOGLE_VISION_API_KEY"))
     imgbb_key: str = field(default_factory=lambda: _env("IMGBB_KEY"))
 
     # --- chain ---

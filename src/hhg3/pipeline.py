@@ -71,7 +71,9 @@ def scan_face(image_path: Path, detector, embedder, run_dir: Path) -> FaceProbe:
 # --- stage 2 + 3: search and confirm -----------------------------------
 def find_match(probe: FaceProbe, provider, detector, embedder, cfg: Config, run_dir: Path):
     stage("2/4 reverse-image search via " + provider.name)
-    candidates = provider.search(Path(probe.crop_path), cfg)
+    query_image = Path(probe.crop_path if cfg.search_image == "crop" else probe.source_path)
+    info("searching the %s image: %s" % (cfg.search_image, query_image.name))
+    candidates = provider.search(query_image, cfg)
     if not candidates:
         raise PipelineError("search returned no candidates")
     social = [c for c in candidates if c.is_social]
@@ -121,8 +123,12 @@ def run(image_path: Path, cfg: Config, allow_mock: bool = False) -> dict[str, An
     run_id, run_dir = new_run_dir(cfg)
     info("run id: " + run_id)
 
-    probe = scan_face(Path(image_path), detector, embedder, run_dir)
-    match, trace, candidates = find_match(probe, provider, detector, embedder, cfg, run_dir)
+    try:
+        probe = scan_face(Path(image_path), detector, embedder, run_dir)
+        match, trace, candidates = find_match(probe, provider, detector, embedder, cfg, run_dir)
+    except Exception:
+        _discard_if_empty(run_dir)
+        raise
     bundle = evidence.build_bundle(run_id, probe, match, provider.name, trace, candidates)
     evidence.save_bundle(run_dir, bundle)
     info("record hash: " + bundle["record_hash"])
@@ -130,6 +136,15 @@ def run(image_path: Path, cfg: Config, allow_mock: bool = False) -> dict[str, An
     receipt = anchor(bundle, cfg, run_dir)
     ok("run complete: " + str(run_dir))
     return {"run_id": run_id, "run_dir": str(run_dir), "bundle": bundle, "receipt": receipt.to_dict()}
+
+
+def _discard_if_empty(run_dir: Path) -> None:
+    """A run that failed before writing anything should not leave a directory."""
+    try:
+        if run_dir.is_dir() and not any(run_dir.iterdir()):
+            run_dir.rmdir()
+    except OSError:
+        pass
 
 
 # --- re-verification ---------------------------------------------------
