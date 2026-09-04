@@ -13,15 +13,16 @@ still matches by re-verifying it against the chain.
 ```
 samples/probe.jpg
       │
-      ▼  1. detect + embed (YuNet → SFace 128-d, or InsightFace ArcFace 512-d)
-   probe crop ──────────────────────────────────────────────┐
-      │                                                     │
-      ▼  2. reverse image search of the SOURCE image
-         (SerpAPI Google Lens / Cloud Vision / Yandex)
+      ▼  1. detect + embed (YuNet → ArcFace R50, 512-d)
+   face box + 60% padding ──────────────────────────────────┐
+      │         (no face? fall back to the whole image)     │
+      ▼  2. reverse image search                            │
+         (SerpAPI Google Lens / Cloud Vision / Yandex)      │
    N candidate pages ─── keep social platforms only         │
       │                                                     │
       ▼  3. confirm: download each candidate image,         │
          re-detect, re-embed, cosine vs. probe ◄────────────┘
+         (no face? perceptual-hash the whole image instead)
    best match above threshold
       │
       ▼  4. canonical record → sha256 → chain
@@ -40,13 +41,32 @@ probe. So the "match" is a face-recognition decision made locally with a
 recorded similarity score and threshold — not a search-engine ranking, and not
 a hardcoded result.
 
-That split also fixes a trap worth knowing about: **reverse image search matches
-photographs, not faces.** Measured on this pipeline — same photo, same provider —
-searching the cropped face returned **0** results from Google Lens, while
-searching the full source image returned **59 visual matches, 13 of them on
-social platforms** across Instagram, X, LinkedIn, Facebook, Reddit, YouTube and
-TikTok. So stage 2 sends the source image and stage 3 uses the face crop.
-`--search-crop` restores the old behaviour if you want to see this for yourself.
+### What gets sent to the search provider
+
+Stage 2 sends the **face box grown by 60%**, clamped to the image so the padding
+is always more of the actual photograph and never black bars. Measured on one
+probe, counting pages that land on a social platform:
+
+| search input | Cloud Vision | Google Lens |
+| --- | --- | --- |
+| whole image | 12 social | 10 social |
+| face box + 25% | 8 social | — |
+| **face box + 60%** | **15 social** | **13 social** |
+| face box + 100% | 14 social | — |
+
+The padded crop beats the full frame on both providers. Enough context survives
+for the engines to match, while the face dominates the frame rather than
+competing with background, other people and captions.
+
+> An earlier version of this README claimed a cropped search returned **0**
+> results from Lens. That measurement was wrong — it did not reproduce. Repeated
+> across two providers and several padding levels, crops match at least as well
+> as the full frame. `--search-image source` still sends the whole image if you
+> want to compare.
+
+When **no face is detected**, stage 2 sends the whole image and stage 3 switches
+to perceptual-hash agreement (`method: "image-phash"` in the record), so object
+photos work too. `--require-face` turns that fallback off.
 
 Only a 32-byte hash goes on-chain. The face embedding never leaves the machine
 and is excluded from the record ([`evidence.py`](src/hhg3/evidence.py)), which
@@ -62,21 +82,31 @@ python -m venv .venv && .venv\Scripts\activate    # Windows
 pip install -e .
 ```
 
-That is enough for a real run: the default face backends are **YuNet**
-(detection) and **SFace** (128-d recognition), both bundled with OpenCV. Their
-ONNX weights (~340 KB and ~37 MB) download themselves into `models/` on first
-use.
+That is enough for a real run: detection is **YuNet** and recognition falls back
+to **SFace** (128-d), both bundled with OpenCV, weights auto-cached in `models/`.
 
-Optional extras:
+For the better embedder — recommended:
 
 ```bash
-pip install -r requirements-face.txt   # insightface + onnxruntime (ArcFace 512-d)
+pip install -r requirements-face.txt   # onnxruntime -> ArcFace R50, 512-d
 pip install -r requirements-evm.txt    # web3 + py-solc-x
 ```
 
-> `onnxruntime` has no wheels for Python 3.14 yet, so the InsightFace backend
-> needs **3.11 or 3.12**. Everything else, YuNet and SFace included, runs on
-> 3.14 — `hhg3 doctor` shows which backends actually resolved.
+With `onnxruntime` present the pipeline picks **ArcFace R50 (512-d)**
+automatically and downloads its weights once (275 MB, from the official
+insightface release). Without it, SFace is used and everything still works.
+`hhg3 doctor` shows which backends actually resolved.
+
+Why it is worth the download — worst impostor score across three different
+people, against a 0.30 threshold:
+
+| embedder | worst impostor | headroom |
+| --- | --- | --- |
+| SFace 128-d | 0.2123 | 0.09 |
+| **ArcFace 512-d** | **0.0928** | **0.21** |
+
+Genuine matches sit at 0.85–0.91 either way, so the gain is entirely in not
+mistaking a stranger for your probe.
 
 Copy `.env.example` to `.env` and fill in whichever keys you have:
 
@@ -103,21 +133,28 @@ hhg3 run --image samples/probe.jpg --provider serpapi --chain evm
 hhg3 verify --run runs/20260903T014500Z-a1b2c3
 ```
 
-Useful flags: `--threshold 0.30` (looser match), `--any-domain` (do not restrict
+Useful flags: `--threshold 0.45` (stricter match), `--any-domain` (do not restrict
 to social platforms), `--search-crop` (search the face crop instead of the source
 image), `--provider mock --allow-mock` (offline plumbing test),
 `--embedder sface|insightface|fallback`, `--json`.
 
-The match threshold defaults to whatever the active embedder declares, because a
-cosine score is only meaningful relative to the model that produced it: **0.363**
-for SFace (OpenCV's documented same-identity threshold) and **0.45** for ArcFace.
-`--threshold` overrides it.
+The match threshold defaults to **0.30**. Each embedder also declares its own
+same-identity threshold — 0.363 for SFace (OpenCV's published figure), 0.45 for
+ArcFace — because a cosine score is only meaningful relative to the model that
+produced it; those apply when `match_threshold` is set to `None` in
+[config.py](src/hhg3/config.py). `--threshold` overrides either.
+
+0.30 sits deliberately below SFace's published figure: it admits more candidates
+so a demo is less likely to end with no match at all. Every accepted match records
+the score and the threshold it cleared, so a marginal one is visible rather than
+hidden. Raise it to 0.363+ if you care more about precision than recall.
 
 Each run writes `runs/<id>/`:
 
 | file | contents |
 | --- | --- |
-| `probe_crop.jpg` | the detected face, padded |
+| `probe_crop.jpg` | the detected face, padded 25% — kept as evidence |
+| `search_crop.jpg` | what was actually sent to the search provider |
 | `candidates/cand_NN.jpg` | every candidate image that was downloaded and scored |
 | `record.json` | the canonical record — exactly what gets hashed |
 | `bundle.json` | record + record hash + chain receipt + full search trace |
@@ -202,7 +239,8 @@ src/hhg3/
   evidence.py       canonical record + bundle read/write
   hashing.py        canonical JSON + sha256
   face/             detect.py, embed.py, compare.py  (pluggable backends)
-  models.py         lazy download/cache for the YuNet + SFace ONNX weights
+  models.py         lazy download/cache for the ONNX weights
+  imagehash.py      DCT perceptual hash, used when there is no face
   search/           serpapi_lens.py, gcv_web.py, yandex.py, mock.py
   verify/match.py   re-detect + re-embed candidates, decide the match
   chain/            local.py (PoW chain), evm.py (calldata | contract)

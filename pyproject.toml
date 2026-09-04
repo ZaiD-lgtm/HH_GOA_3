@@ -15,7 +15,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-face = ["insightface>=0.7.3", "onnxruntime>=1.17"]
+face = ["onnxruntime>=1.17"]           # ArcFace R50, 512-d
+insightface = ["insightface>=0.7.3", "onnxruntime>=1.17"]
 evm = ["web3>=6.15", "py-solc-x>=2.0"]
 dev = ["pytest>=8.0"]
 

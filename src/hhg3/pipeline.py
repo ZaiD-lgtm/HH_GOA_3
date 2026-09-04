@@ -31,60 +31,90 @@ def new_run_dir(cfg: Config) -> tuple[str, Path]:
     return run_id, path
 
 
-# --- stage 1: face -----------------------------------------------------
-def scan_face(image_path: Path, detector, embedder, run_dir: Path) -> FaceProbe:
+# --- stage 1: probe ------------------------------------------------------
+def _crop(image, bbox, pad_frac: float):
+    """Face box grown by `pad_frac` of its longest side, clamped to the image.
+
+    Clamping matters: padding is always more of the actual photograph, never
+    black bars, so the crop never introduces borders the model has to ignore.
+    """
+    x, y, w, h = bbox
+    pad = int(pad_frac * max(w, h))
+    x0, y0 = max(x - pad, 0), max(y - pad, 0)
+    x1, y1 = min(x + w + pad, image.shape[1]), min(y + h + pad, image.shape[0])
+    return image[y0:y1, x0:x1]
+
+
+def scan_probe(image_path: Path, detector, embedder, cfg: Config, run_dir: Path) -> FaceProbe:
+    """Build the probe. Falls back to a whole-image probe when no face is found."""
     import cv2
 
-    stage("1/4 face scan: " + str(image_path))
+    stage("1/4 scanning " + str(image_path))
     image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
     if image is None:
         raise PipelineError("could not read image: " + str(image_path))
-
+    source_sha = sha256_file(image_path)
     dets = detector.detect(image)
+
     if not dets:
-        raise PipelineError("no face detected in " + str(image_path))
+        if cfg.require_face:
+            raise PipelineError("no face detected in %s (--require-face is set)" % image_path)
+        warn("no face detected - searching the whole image and matching by image hash")
+        return FaceProbe(
+            source_path=str(image_path), source_sha256=source_sha,
+            crop_path=None, crop_sha256=None, embedding=[],
+            detector=detector.name, embedder="n/a", kind="image",
+        )
+
     det = dets[0]
     info("faces detected: %d, using bbox %s" % (len(dets), det.bbox))
-
-    x, y, w, h = det.bbox
-    pad = int(0.25 * max(w, h))
-    x0, y0 = max(x - pad, 0), max(y - pad, 0)
-    x1, y1 = min(x + w + pad, image.shape[1]), min(y + h + pad, image.shape[0])
     crop_path = run_dir / "probe_crop.jpg"
-    cv2.imwrite(str(crop_path), image[y0:y1, x0:x1])
+    cv2.imwrite(str(crop_path), _crop(image, det.bbox, cfg.probe_pad))
 
     vector = embedder.embed(image, det)
     ok("probe embedded (%d-d, %s)" % (len(vector), embedder.name))
     return FaceProbe(
-        source_path=str(image_path),
-        source_sha256=sha256_file(image_path),
-        bbox=det.bbox,
-        crop_path=str(crop_path),
-        crop_sha256=sha256_file(crop_path),
-        embedding=[float(v) for v in vector],
-        detector=detector.name,
-        embedder=embedder.name,
-        det_score=det.score,
+        source_path=str(image_path), source_sha256=source_sha,
+        crop_path=str(crop_path), crop_sha256=sha256_file(crop_path),
+        embedding=[float(v) for v in vector], detector=detector.name,
+        embedder=embedder.name, kind="face", bbox=det.bbox, det_score=det.score,
     )
 
 
-# --- stage 2 + 3: search and confirm -----------------------------------
+# --- stage 2 + 3: search and confirm -------------------------------------
+def search_input(probe: FaceProbe, cfg: Config, run_dir: Path) -> tuple[Path, str]:
+    """Pick what the search provider actually receives."""
+    if cfg.search_image == "face" and not probe.has_face:
+        raise PipelineError("search_image=face but no face was detected")
+    if cfg.search_image == "source" or not probe.has_face:
+        return Path(probe.source_path), "whole image"
+
+    import cv2
+
+    image = cv2.imread(probe.source_path, cv2.IMREAD_COLOR)
+    dest = run_dir / "search_crop.jpg"
+    cv2.imwrite(str(dest), _crop(image, probe.bbox, cfg.search_pad),
+                [cv2.IMWRITE_JPEG_QUALITY, 95])
+    return dest, "face box + %.0f%% padding" % (cfg.search_pad * 100)
+
+
 def find_match(probe: FaceProbe, provider, detector, embedder, cfg: Config, run_dir: Path):
     stage("2/4 reverse-image search via " + provider.name)
-    query_image = Path(probe.crop_path if cfg.search_image == "crop" else probe.source_path)
-    info("searching the %s image: %s" % (cfg.search_image, query_image.name))
-    candidates = provider.search(query_image, cfg)
+    query, described = search_input(probe, cfg, run_dir)
+    info("searching the %s: %s" % (described, query.name))
+    candidates = provider.search(query, cfg)
     if not candidates:
         raise PipelineError("search returned no candidates")
     social = [c for c in candidates if c.is_social]
     info("candidates: %d total, %d on social platforms" % (len(candidates), len(social)))
 
-    stage("3/4 confirming candidates against the probe face")
+    stage("3/4 confirming candidates against the probe")
     match, trace = confirm_candidates(probe, candidates, detector, embedder, cfg, run_dir / "candidates")
     if match is None:
+        threshold = cfg.match_threshold if probe.has_face else cfg.image_match_threshold
         raise PipelineError(
-            "no candidate matched above threshold %.2f - try --threshold, another "
-            "--provider, or a clearer input image" % cfg.match_threshold
+            "no candidate matched above %.2f - try --threshold, another --provider, "
+            "a different --search-image mode, or a clearer input image" % threshold
         )
     return match, trace, [asdict(c) for c in candidates]
 
@@ -112,7 +142,10 @@ def run(image_path: Path, cfg: Config, allow_mock: bool = False) -> dict[str, An
     embedder = get_embedder(cfg.embedder)
     if cfg.match_threshold is None:
         cfg.match_threshold = embedder.default_threshold
-        info("threshold: %.3f (default for %s)" % (cfg.match_threshold, embedder.name))
+        info("threshold: %.3f (%s default)" % (cfg.match_threshold, embedder.name))
+    else:
+        info("threshold: %.3f (%s default is %.3f)"
+             % (cfg.match_threshold, embedder.name, embedder.default_threshold))
     provider = get_provider(cfg.search_provider)
     if not provider.genuine and not allow_mock:
         raise PipelineError(
@@ -124,7 +157,7 @@ def run(image_path: Path, cfg: Config, allow_mock: bool = False) -> dict[str, An
     info("run id: " + run_id)
 
     try:
-        probe = scan_face(Path(image_path), detector, embedder, run_dir)
+        probe = scan_probe(Path(image_path), detector, embedder, cfg, run_dir)
         match, trace, candidates = find_match(probe, provider, detector, embedder, cfg, run_dir)
     except Exception:
         _discard_if_empty(run_dir)

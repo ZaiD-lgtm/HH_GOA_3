@@ -1,2 +1,8 @@
-insightface>=0.7.3
+# Upgrades recognition from SFace (128-d) to ArcFace R50 (512-d).
+# onnxruntime is all that is needed - the weights come from the official
+# insightface release and are cached in models/ on first use.
 onnxruntime>=1.17
+
+# Only needed for --embedder insightface, which uses insightface's own runtime.
+# It often wants MSVC build tools on Windows; the arcface backend above avoids that.
+# insightface>=0.7.3
