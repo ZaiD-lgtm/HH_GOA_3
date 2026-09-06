@@ -76,8 +76,8 @@ to publish.
 ## Install
 
 ```bash
-git clone https://github.com/Pragyan330/HH_goa.git
-cd HH_goa
+git clone https://github.com/ZaiD-lgtm/HH_GOA_3.git
+cd HH_GOA_3
 python -m venv .venv && .venv\Scripts\activate    # Windows
 pip install -e .
 ```
