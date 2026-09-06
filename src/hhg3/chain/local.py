@@ -1,8 +1,5 @@
 """A minimal local proof-of-work chain.
-
-Not a substitute for a public chain - it is the offline demo path and the thing
-the tests run against. Blocks are hash-linked, so editing an earlier block
-invalidates every block after it, which `validate()` reports.
+    BTC based local block chain - SHA256 hashing
 """
 
 from __future__ import annotations
@@ -54,7 +51,7 @@ class LocalChain:
     def path(self) -> Path:
         return self._resolve()
 
-    # --- storage -------------------------------------------------------
+    # storage
     def load(self, path: Path | None = None) -> list[dict[str, Any]]:
         target = Path(path) if path else self._resolve()
         if not target.exists():
@@ -65,7 +62,7 @@ class LocalChain:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(blocks, indent=2), encoding="utf-8")
 
-    # --- AnchorBackend -------------------------------------------------
+    # anchor backend
     def available(self) -> bool:
         return True
 
@@ -108,7 +105,7 @@ class LocalChain:
                 }
         return None
 
-    # --- integrity -----------------------------------------------------
+    # integrity
     def validate(self, path: Path | None = None) -> tuple[bool, str]:
         prev = GENESIS_PREV
         for i, block in enumerate(self.load(path)):
