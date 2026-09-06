@@ -10,7 +10,7 @@ from __future__ import annotations
 import html
 import re
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import numpy as np
 import requests
@@ -32,6 +32,13 @@ CRAWLER_UA = "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot
 MAX_BYTES = 25 * 1024 * 1024
 HTML_SNIFF = 1 << 19  # 512 KB reaches <head> on even the worst offenders
 
+# A domain can be unreachable from a particular network rather than broken: a
+# corporate or ISP web filter answers port 443 with a plaintext HTTP 503, which
+# Python's TLS parser reports as "[SSL: WRONG_VERSION_NUMBER]", or it drops the
+# connection outright. That verdict is per-host, not per-candidate, so the first
+# failure records the host and every later candidate on it skips immediately.
+UNREACHABLE_HOSTS: set[str] = set()
+
 _OG_IMAGE_RE = re.compile(
     rb"""<meta[^>]+(?:property|name)\s*=\s*["'](?:og:image|twitter:image)["'][^>]*"""
     rb"""content\s*=\s*["']([^"']+)["']""",
@@ -39,15 +46,36 @@ _OG_IMAGE_RE = re.compile(
 )
 
 
+class HostUnreachable(RuntimeError):
+    """The candidate's host does not answer from this network."""
+
+
+def host_of(url: str) -> str:
+    return (urlparse(url).hostname or "").lower()
+
+
 def _request(url: str, cfg: Config, user_agent: str):
-    return requests.get(
-        url,
-        headers={
-            "User-Agent": user_agent,
-            "Accept": "image/avif,image/webp,image/*,*/*;q=0.8",
-        },
-        timeout=cfg.http_timeout,
-        stream=True,
+    headers = {
+        "User-Agent": user_agent,
+        "Accept": "image/avif,image/webp,image/*,*/*;q=0.8",
+    }
+    last: Exception | None = None
+    # A bare reset is sometimes a transient blip, so it gets one retry. An SSL
+    # failure against a filtered domain is deterministic - retrying only costs
+    # time - so it breaks out immediately.
+    for _ in range(2):
+        try:
+            return requests.get(url, headers=headers, timeout=cfg.http_timeout, stream=True)
+        except requests.exceptions.SSLError as exc:
+            last = exc
+            break
+        except requests.exceptions.ConnectionError as exc:
+            last = exc
+
+    host = host_of(url)
+    UNREACHABLE_HOSTS.add(host)
+    raise HostUnreachable(
+        "%s is unreachable from this network (%s)" % (host or url, type(last).__name__)
     )
 
 
@@ -116,6 +144,9 @@ def _prepare(cand: Candidate, idx: int, cfg: Config, work_dir: Path, row: dict):
     if not cand.image_url:
         row["status"] = "no-image-url"
         return None
+    if host_of(cand.image_url) in UNREACHABLE_HOSTS:
+        row["status"] = "host-unreachable"
+        return None
     dest = work_dir / ("cand_%02d.jpg" % idx)
     fetch_image(cand.image_url, dest, cfg)
     return dest, _decode(dest)
@@ -161,6 +192,10 @@ def _score_by_face(probe, candidates, detector, embedder, cfg, work_dir):
                 best = Match(candidate=cand, similarity=float(score), threshold=cfg.match_threshold,
                              candidate_image_path=str(dest), candidate_image_sha256=sha256_file(dest),
                              matched_bbox=det.bbox, method="face-cosine")
+        except HostUnreachable as exc:
+            row["status"] = "host-unreachable"
+            row["error"] = str(exc)
+            warn("candidate %d skipped: %s" % (idx, exc))
         except Exception as exc:
             row["status"] = "error"
             row["error"] = "%s: %s" % (type(exc).__name__, exc)
@@ -194,6 +229,10 @@ def _score_by_image(probe, candidates, cfg, work_dir):
                 best = Match(candidate=cand, similarity=score, threshold=threshold,
                              candidate_image_path=str(dest), candidate_image_sha256=sha256_file(dest),
                              matched_bbox=None, method="image-phash")
+        except HostUnreachable as exc:
+            row["status"] = "host-unreachable"
+            row["error"] = str(exc)
+            warn("candidate %d skipped: %s" % (idx, exc))
         except Exception as exc:
             row["status"] = "error"
             row["error"] = "%s: %s" % (type(exc).__name__, exc)
