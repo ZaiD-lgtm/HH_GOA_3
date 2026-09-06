@@ -136,7 +136,21 @@ hhg3 verify --run runs/20260903T014500Z-a1b2c3
 Useful flags: `--threshold 0.45` (stricter match), `--any-domain` (do not restrict
 to social platforms), `--search-crop` (search the face crop instead of the source
 image), `--provider mock --allow-mock` (offline plumbing test),
-`--embedder sface|insightface|fallback`, `--json`.
+`--embedder sface|insightface|fallback`, `--no-image`, `--json`.
+
+A finished run prints the probe and the matched post side by side, drawn in the
+terminal with half-block characters, above a panel carrying the post URL, the
+similarity, the record hash and the chain receipt — so a screen recording ends on
+a frame that shows both the face that was found and the anchor that proves it.
+
+Each preview is cropped to the face box the matcher actually scored. A candidate
+is usually a whole post — a video thumbnail, a group shot — in which the face is
+a small corner of the frame, so the crop is what makes it recognisable on camera;
+`--preview-full` shows the uncropped post instead. Previews size themselves to
+the terminal (bounded by its height, since a square crop that is wide is also
+tall), and `--preview-width N` overrides that. The pictures need a colour-capable
+TTY; piped or redirected output, `NO_COLOR`, and `--no-image` all fall back to
+the panel alone, which carries the same facts.
 
 The match threshold defaults to **0.30**. Each embedder also declares its own
 same-identity threshold — 0.363 for SFace (OpenCV's published figure), 0.45 for
