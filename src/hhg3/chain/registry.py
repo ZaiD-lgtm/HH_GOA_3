@@ -1,4 +1,4 @@
-"""Chain backend selection."""
+"""Chain backend selection. local vs local ganache EVM"""
 
 from __future__ import annotations
 
