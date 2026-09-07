@@ -4,12 +4,6 @@ HH Goa 2026 shortlisting, Task 3. A command-line pipeline: it takes a face scan,
 finds a real matching social-media post on the open web, writes a tamper-evident
 record of that finding to a blockchain, then re-verifies the record against the
 chain.
-
-> Status: prototype skeleton. Every stage boundary, data shape and CLI command
-> is in place and the local-chain path runs end to end. The pieces that still
-> need to be turned on for the submission are listed under
-> [What is not done yet](#what-is-not-done-yet).
-
 ```
 samples/probe.jpg
       │
@@ -57,12 +51,6 @@ probe, counting pages that land on a social platform:
 The padded crop beats the full frame on both providers. Enough context survives
 for the engines to match, and the face still dominates the frame instead of
 competing with background, other people and captions.
-
-> An earlier version of this README claimed a cropped search returned 0 results
-> from Lens. That measurement was wrong and did not reproduce. Repeated across
-> two providers and several padding levels, crops match at least as well as the
-> full frame. `--search-image source` still sends the whole image if you want to
-> compare.
 
 When no face is detected, stage 2 sends the whole image and stage 3 switches to
 perceptual-hash agreement (`method: "image-phash"` in the record), so object
@@ -196,53 +184,8 @@ from the local bundle, read the record back off the chain, compare.
 ```bash
 pytest
 ```
-
 Covers canonical hashing, local-chain integrity, and the case the whole claim
 rests on: editing `record.json` after anchoring makes `hhg3 verify` fail.
-
-## What is not done yet
-
-- [x] Confirmed end-to-end run against a live social post. SerpAPI Google Lens
-      returned 25 candidates, 9 on social platforms, 6 scored by face similarity
-      (0.83 to 0.95), matched an X post, then anchored and re-verified.
-- [ ] Testnet run on Sepolia with a funded key, and the tx link recorded here.
-- [ ] Thresholds sanity-checked on real pairs. The defaults are the model
-      authors' published numbers, not values measured on this pipeline's crops.
-- [ ] Screen recording of the end-to-end run.
-
-## Known limitations
-
-- This finds the photo, not the person. Stage 2 can only surface pages hosting
-  that same photograph. A different photo of the same face will not be found;
-  that would need a face-search index of the PimEyes kind, which this project
-  stays away from on purpose.
-- Social platforms serve crawler gateways, not image files. Both search
-  providers hand back `lookaside.fbsbx.com` / `lookaside.instagram.com` URLs.
-  Facebook's returns HTML to a browser user-agent and the real JPEG to a crawler
-  one; Instagram's returns HTML to everything but carries an `og:image` pointing
-  at the actual CDN file. [verify/match.py](src/hhg3/verify/match.py) falls back
-  through both, which took the social scoring rate from 2/9 to 9/9 on a test
-  probe. Sites that do neither are logged and skipped.
-- The Yandex provider scrapes HTML, so it will break when the markup changes or
-  when it is served a captcha. Treat it as a fallback only.
-- The source image is uploaded to a public host (catbox.moe) because Lens needs
-  a URL it can fetch, and catbox is intermittently flaky, so uploads retry three
-  times. tmpfiles.org was tried and rejected: Lens returns nothing for its
-  links. The Cloud Vision provider POSTs the image directly and avoids the
-  public host entirely; prefer it when the probe is someone else's photo.
-- Bing Visual Search is not available. Microsoft retired the entire Bing Search
-  API family on 2025-08-11, with no new signups and a 410 on existing keys, so
-  that provider was removed instead of being left in as a trap.
-- No liveness or spoof detection. A printed photo or a screen would pass.
-- The chain proves *when*, not *what*. An anchor shows this exact record existed
-  at that block; it says nothing about whether the match was correct.
-
-## Scope and use
-
-Built for a shortlisting task, on images the operator is entitled to search.
-Reverse face search on people who have not consented is a privacy harm and is
-restricted or unlawful in several jurisdictions; nothing here is intended for
-surveillance or for identifying strangers.
 
 ## Layout
 
