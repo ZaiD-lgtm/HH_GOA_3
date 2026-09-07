@@ -114,6 +114,12 @@ def get_detector(name: str = "auto") -> Detector:
             det = _BUILDERS[key]()
             info("detector: " + det.name)
             return det
+        except ImportError:
+            # An optional backend that was never installed is a configuration
+            # fact, not an event - the ladder exists so the next rung takes
+            # over, and the line above always reports what actually got picked.
+            # A backend that IS installed but fails to start still warns.
+            continue
         except Exception as exc:
             warn("detector %r unavailable (%s: %s)" % (key, type(exc).__name__, exc))
     raise RuntimeError("no face detector available - install opencv-python>=4.5.4 at minimum")

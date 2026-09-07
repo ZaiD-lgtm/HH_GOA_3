@@ -197,6 +197,8 @@ def get_embedder(name: str = "auto") -> Embedder:
             if not emb.identity_grade:
                 warn("no identity-grade embedder - similarity scores are NOT face recognition")
             return emb
+        except ImportError:
+            continue  # optional extra not installed; see get_detector
         except Exception as exc:
             warn("embedder %r unavailable (%s: %s)" % (key, type(exc).__name__, exc))
     raise RuntimeError("no embedder available")
