@@ -1,4 +1,4 @@
-"""EVM anchoring (Sepolia / Polygon Amoy / any JSON-RPC chain).
+"""EVM anchoring.
 
 Two modes:
   calldata  - a 0-value self-transaction whose input data carries the record
@@ -62,7 +62,7 @@ class EvmChain:
         except Exception:
             return False
 
-    # --- write ---------------------------------------------------------
+    #  write
     def anchor(self, record_hash: str, metadata: dict[str, Any], cfg: Config) -> Receipt:
         w3 = self._web3(cfg)
         acct = w3.eth.account.from_key(cfg.private_key)
@@ -134,7 +134,7 @@ class EvmChain:
         except Exception:
             return {"gasPrice": w3.eth.gas_price}
 
-    # --- read ----------------------------------------------------------
+    # read
     def fetch(self, receipt: Receipt, cfg: Config) -> dict[str, Any] | None:
         w3 = self._web3(cfg)
         tx = w3.eth.get_transaction(receipt.tx_hash)

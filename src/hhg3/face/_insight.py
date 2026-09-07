@@ -1,5 +1,3 @@
-"""Lazily-built, process-wide InsightFace app (model load is slow)."""
-
 from __future__ import annotations
 
 _APPS: dict[str, object] = {}

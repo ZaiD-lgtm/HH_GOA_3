@@ -2,7 +2,7 @@
 
 Anchoring writes a single 32-byte record hash (plus small metadata) to a chain.
 Re-verification recomputes that hash from the local evidence bundle and compares
-it to what the chain returns - so tampering with the evidence is detectable.
+it to what the chain returns - so tampering is detectable.
 """
 
 from __future__ import annotations

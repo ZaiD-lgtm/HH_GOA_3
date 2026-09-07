@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from hhg3 import __version__, logging_utils
@@ -49,6 +50,12 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--search-crop", action="store_true",
                      help="alias for --search-image face")
     run.add_argument("--allow-mock", action="store_true", help="permit the fixture provider")
+    run.add_argument("--no-image", action="store_true",
+                     help="skip the inline preview of the probe and the matched post")
+    run.add_argument("--preview-width", type=int, default=None,
+                     help="columns for each inline preview (default: fit the terminal)")
+    run.add_argument("--preview-full", action="store_true",
+                     help="preview the whole matched post instead of cropping to the face")
     run.add_argument("--json", action="store_true", help="print the result as JSON")
     _common(run)
 
@@ -102,20 +109,86 @@ def cmd_run(args) -> int:
     if args.json:
         print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
     else:
-        record = result["bundle"]["record"]
-        receipt = result["receipt"]
-        print("")
-        print("run dir      : " + result["run_dir"])
-        print("matched post : %s (%s)" % (record["match"]["page_url"], record["match"]["platform"]))
-        print("similarity   : %.4f (threshold %.2f)" % (record["match"]["similarity"], record["match"]["threshold"]))
-        print("record hash  : " + result["bundle"]["record_hash"])
-        print("chain        : %s / %s" % (receipt["backend"], receipt["network"]))
-        print("tx           : " + receipt["tx_hash"])
-        if receipt.get("explorer_url"):
-            print("explorer     : " + receipt["explorer_url"])
-        print("")
-        print("re-verify with:  hhg3 verify --run " + result["run_dir"])
+        _print_run_summary(result, show_images=not args.no_image,
+                           width=args.preview_width, face_only=not args.preview_full)
     return 0
+
+
+def _or_dash(value) -> str:
+    """Block 0 is a real block - `or` would hide it."""
+    return "-" if value is None else str(value)
+
+
+def _utc(seconds) -> str:
+    if not seconds:
+        return "-"
+    stamp = datetime.fromtimestamp(int(seconds), timezone.utc)
+    return stamp.isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _print_run_summary(result: dict, show_images: bool, width: int | None = None,
+                       face_only: bool = True) -> None:
+    """The frame a demo recording ends on: the post we found, and its anchor."""
+    from hhg3 import render
+
+    bundle = result["bundle"]
+    record, context = bundle["record"], bundle["context"]
+    match, probe, receipt = record["match"], record["probe"], result["receipt"]
+    color = render.supports_color(sys.stdout)
+    clean = render.clean
+
+    print("")
+    if show_images and color:
+        cols = width or render.preview_cols()
+        blocks = []
+        crop = context.get("probe_crop_path")
+        seen = crop or context.get("probe_source_path")
+        if seen and Path(seen).exists():
+            # probe_crop.jpg is already the detected face; the raw source is not.
+            box = None if crop else probe.get("bbox")
+            blocks.append(render.captioned(
+                seen, "PROBE - who we searched for", cols, color, box if face_only else None))
+        found = context.get("match_image_path")
+        if found and Path(found).exists():
+            caption = "MATCH - %s, similarity %.4f" % (match["platform"] or "web", match["similarity"])
+            box = match.get("matched_bbox") if face_only else None
+            blocks.append(render.captioned(found, caption, cols, color, box))
+        for line in render.side_by_side(blocks):
+            print(line)
+        if blocks:
+            print("")
+
+    chain_rows = [
+        ("backend", "%s / %s" % (receipt["backend"], receipt["network"])),
+        ("tx", receipt["tx_hash"]),
+        ("block", _or_dash(receipt.get("block_number"))),
+        ("timestamp", _utc(receipt.get("timestamp"))),
+    ]
+    if receipt.get("explorer_url"):
+        chain_rows.append(("explorer", receipt["explorer_url"]))
+
+    sections = [
+        ("SOCIAL MEDIA POST FOUND", [
+            ("platform", clean(match["platform"] or "-")),
+            ("post", clean(match["page_url"])),
+            ("title", clean(match.get("title") or "-")),
+            ("image", clean(match.get("image_url") or "-")),
+            ("similarity", "%.4f   (threshold %.2f, %s)"
+             % (match["similarity"], match["threshold"], match["method"])),
+            ("image sha256", match["image_sha256"]),
+        ]),
+        ("EVIDENCE", [
+            ("run dir", result["run_dir"]),
+            ("searched by", "%s / %s" % (probe["detector"], probe["embedder"])),
+            ("provider", record["search_provider"]),
+            ("record hash", bundle["record_hash"]),
+        ]),
+        ("ANCHORED ON CHAIN", chain_rows),
+    ]
+    for line in render.panel(sections, color):
+        print(line)
+    print("")
+    print("re-verify with:  hhg3 verify --run " + result["run_dir"])
 
 
 def cmd_verify(args) -> int:
@@ -190,6 +263,10 @@ def main(argv: list[str] | None = None) -> int:
             stream.reconfigure(encoding="utf-8", errors="replace")
         except (AttributeError, ValueError):
             pass
+
+    from hhg3.render import enable_vt
+
+    enable_vt()
 
     args = build_parser().parse_args(argv)
     logging_utils.set_verbose(not getattr(args, "quiet", False))

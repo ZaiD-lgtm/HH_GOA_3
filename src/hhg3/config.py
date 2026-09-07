@@ -20,6 +20,20 @@ def _env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
 
+def _rpc_url() -> str:
+    """RPC_URL, tolerating a bare host:port.
+
+    web3's HTTPProvider hands the URL straight to requests, which rejects
+    "127.0.0.1:8545" with InvalidSchema. is_connected() swallows that and
+    returns False, so a missing scheme surfaces as "cannot reach RPC" - which
+    reads like a dead node rather than the typo it is.
+    """
+    url = _env("RPC_URL")
+    if url and "://" not in url:
+        url = "http://" + url
+    return url
+
+
 @dataclass
 class Config:
     # --- face ---
@@ -54,7 +68,7 @@ class Config:
 
     # --- chain ---
     chain: str = "local"           # local | evm
-    rpc_url: str = field(default_factory=lambda: _env("RPC_URL"))
+    rpc_url: str = field(default_factory=_rpc_url)
     private_key: str = field(default_factory=lambda: _env("PRIVATE_KEY"))
     contract_address: str = field(default_factory=lambda: _env("CONTRACT_ADDRESS"))
     evm_mode: str = field(default_factory=lambda: _env("EVM_MODE", "calldata"))  # calldata | contract
